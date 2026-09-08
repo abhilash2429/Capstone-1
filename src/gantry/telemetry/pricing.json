@@ -1,0 +1,17 @@
+{
+  "_meta": {
+    "currency": "USD",
+    "unit": "per 1M tokens",
+    "source": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/",
+    "last_verified": "2026-09-08",
+    "note": "Azure Global Standard rates generally track OpenAI list prices. Regional, Provisioned Throughput and batch rates differ. Entries with verified=false are provisional: confirm against the pricing page before quoting any cost number from this repository."
+  },
+  "models": {
+    "gpt-4o":          {"input": 2.50, "output": 10.00, "cached_input": 1.25, "verified": true},
+    "gpt-4o-mini":     {"input": 0.15, "output": 0.60,  "cached_input": 0.075, "verified": true},
+    "gpt-4.1-nano":    {"input": 0.10, "output": 0.40,  "cached_input": 0.025, "verified": true},
+    "gpt-4.1":         {"input": 2.00, "output": 8.00,  "cached_input": 0.50,  "verified": false},
+    "gpt-4.1-mini":    {"input": 0.40, "output": 1.60,  "cached_input": 0.10,  "verified": false},
+    "offline-fixture": {"input": 0.00, "output": 0.00,  "cached_input": 0.00,  "verified": true}
+  }
+}

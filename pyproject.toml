@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gantry-harness"
+version = "0.1.0"
+description = "An agent harness: loop contract, tool registry, transport, sandbox, verification and telemetry."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "jsonschema>=4.20",
+]
+
+[project.optional-dependencies]
+azure = ["openai>=1.40"]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.5"]
+
+[project.scripts]
+gantry = "gantry.cli.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gantry = ["telemetry/*.sql", "telemetry/*.json", "api/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = ["live: requires real Azure OpenAI credentials"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
