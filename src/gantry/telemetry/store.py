@@ -201,8 +201,10 @@ class TelemetryStore:
             where.append("status = ?")
             params.append(status)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
+        # The interpolated fragment is assembled from the literals above; every
+        # caller-supplied value travels as a bound parameter.
         rows = self.conn.execute(
-            f"SELECT * FROM traces {clause} ORDER BY started_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM traces {clause} ORDER BY started_at DESC LIMIT ? OFFSET ?",  # noqa: S608
             (*params, limit, offset),
         ).fetchall()
         return [_row(r, ("attributes",)) for r in rows]
@@ -243,7 +245,9 @@ class TelemetryStore:
         values = [
             r[0]
             for r in self.conn.execute(
-                f"SELECT duration_ms FROM traces {clause} ORDER BY duration_ms ASC", params
+                # Same as list_traces: fixed fragments, bound values.
+                f"SELECT duration_ms FROM traces {clause} ORDER BY duration_ms ASC",  # noqa: S608
+                params,
             )
         ]
         if not values:

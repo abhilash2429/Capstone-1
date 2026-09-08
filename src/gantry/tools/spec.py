@@ -32,7 +32,7 @@ class Capability(StrEnum):
     PROC_EXEC = "proc:exec"
     NET = "net"
     ENV_READ = "env:read"
-    SECRET_READ = "secret:read"
+    SECRET_READ = "secret:read"  # noqa: S105 - a capability name, not a credential
 
     @property
     def is_dangerous(self) -> bool:

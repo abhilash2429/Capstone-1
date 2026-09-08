@@ -9,9 +9,12 @@ does not mean throwing the instrumentation away.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from gantry.telemetry.tracer import Span, Trace
+
+log = logging.getLogger("gantry.telemetry")
 
 _STATUS_CODE = {"unset": 0, "ok": 1, "error": 2}
 # OTel SpanKind: 1=INTERNAL, 3=CLIENT. Calls that leave the process are CLIENT.
@@ -121,4 +124,13 @@ class FanOutExporter:
             try:
                 exporter.export(trace)
             except Exception:
-                continue
+                # Telemetry must never break the agent it is observing, so any
+                # exporter failure is contained. It is logged rather than
+                # swallowed, because a silently dropped trace is how you find
+                # out weeks later that an exporter has been broken all along.
+                log.warning(
+                    "exporter %s failed to export trace %s",
+                    type(exporter).__name__,
+                    trace.trace_id,
+                    exc_info=True,
+                )

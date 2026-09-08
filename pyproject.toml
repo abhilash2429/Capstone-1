@@ -38,5 +38,12 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# S (bandit) and BLE (blind except) are enabled deliberately: this project
+# executes model-chosen commands and must never swallow an error silently.
+# Every suppression below carries a reason at its call site.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "S", "BLE"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and construct deliberately hostile inputs.
+"tests/**" = ["S101", "S108", "S603", "S607"]

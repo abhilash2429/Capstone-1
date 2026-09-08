@@ -56,7 +56,7 @@ class StopReason(StrEnum):
 
     MAX_STEPS = "max_steps"
     MAX_TOOL_CALLS = "max_tool_calls"
-    TOKEN_BUDGET = "token_budget"
+    TOKEN_BUDGET = "token_budget"  # noqa: S105 - a budget name, not a credential
     COST_BUDGET = "cost_budget"
     DEADLINE = "deadline"
     TOOL_ERROR_BUDGET = "tool_error_budget"
