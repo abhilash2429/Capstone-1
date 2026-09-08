@@ -120,6 +120,9 @@ class SandboxConfig:
     max_processes: int = 64
     max_file_size_mb: int = 64
     allow_network: bool = False
+    #: Put the harness's own interpreter directory first on the sandbox PATH,
+    #: so `python` means the interpreter the agent itself runs under.
+    inherit_interpreter: bool = True
     #: When true, commands run in a disposable container instead of a subprocess.
     use_container: bool = False
     container_image: str = "python:3.11-slim"

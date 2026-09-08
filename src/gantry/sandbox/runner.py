@@ -169,6 +169,19 @@ class SandboxRunner:
         """
         env = {name: os.environ[name] for name in ENV_ALLOWLIST if name in os.environ}
         env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+        if self.config.inherit_interpreter:
+            # Put the harness's own interpreter first on PATH, so `python`
+            # inside the sandbox means the same Python that is running the
+            # agent. Without this, a workspace installed into a virtualenv
+            # gets the system interpreter instead, and a gate running
+            # `python -m pytest` fails with "No module named pytest" - a
+            # verification failure that has nothing to do with the code under
+            # test, and which an agent will spend its entire budget trying to
+            # fix. Anything on that PATH is already as trusted as the harness.
+            bindir = str(Path(sys.executable).parent)
+            entries = env["PATH"].split(os.pathsep)
+            if bindir not in entries:
+                env["PATH"] = os.pathsep.join([bindir, *entries])
         env["HOME"] = str(self.jail.root)
         env["TMPDIR"] = str(self.jail.root)
         env["PWD"] = str(self.jail.root)

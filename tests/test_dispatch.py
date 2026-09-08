@@ -302,3 +302,30 @@ def test_an_empty_turn_is_a_no_op(registry, ctx):
     dispatcher = build(registry)
     outcome = dispatcher.dispatch([], dispatcher.contract.start_run(), ctx)
     assert outcome.results == [] and not outcome.should_stop
+
+
+def test_an_error_detail_cannot_collide_with_the_result_fields(registry):
+    """A detail named `error_code` used to crash the failure handler itself.
+
+    The details are splatted as keyword arguments alongside the ones taken
+    from the error, so a collision raised a TypeError from inside the code
+    that exists to report failures - turning a tool error into a dead run.
+    """
+    from gantry.errors import ToolExecutionError
+
+    def handler(args, ctx):
+        raise ToolExecutionError("boom", error_code="mine", retryable=True, path="x")
+
+    registry.register(make_spec("colliding", handler=handler))
+    contract = LoopContract()
+    dispatcher = Dispatcher(registry=registry, grant=Grant.unrestricted(), contract=contract)
+    outcome = dispatcher.dispatch(
+        [ToolCall(id="1", name="colliding", arguments={"text": "v"})],
+        contract.start_run(),
+        ToolContext(),
+    )
+    result = outcome.results[0].result
+    assert not result.ok
+    # The error's own code wins; the smuggled detail is dropped.
+    assert result.error_code == "tool.execution_failed"
+    assert result.data["path"] == "x"

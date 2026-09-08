@@ -10,6 +10,7 @@ child it is capping.
 from __future__ import annotations
 
 import functools
+import os
 import shutil
 import subprocess
 import sys
@@ -595,3 +596,29 @@ def test_a_limit_the_platform_refuses_does_not_stop_the_command():
         check=True,
     )
     assert result.stdout.strip() == "ran anyway"
+
+
+def test_the_harness_interpreter_comes_first_on_path(tmp_path):
+    """A gate running `python -m pytest` must find the harness's own Python.
+
+    Without this the sandbox inherits the system interpreter, pytest is not
+    importable, and every verification gate fails for a reason that has
+    nothing to do with the code being checked.
+    """
+    from pathlib import Path
+
+    runner = SandboxRunner(PathJail(tmp_path))
+    path = runner.build_env()["PATH"].split(os.pathsep)
+    assert path[0] == str(Path(sys.executable).parent)
+
+    result = runner.run('python -c "import sys; print(sys.executable)"')
+    assert result.ok
+    assert result.stdout.strip() == sys.executable
+
+
+def test_interpreter_inheritance_can_be_switched_off(tmp_path):
+    from pathlib import Path
+
+    runner = SandboxRunner(PathJail(tmp_path), config=SandboxConfig(inherit_interpreter=False))
+    path = runner.build_env()["PATH"].split(os.pathsep)
+    assert path[0] != str(Path(sys.executable).parent)

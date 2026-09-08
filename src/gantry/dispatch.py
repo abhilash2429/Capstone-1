@@ -95,6 +95,11 @@ def _not_executed(call: ToolCall, reason: str) -> DispatchResult:
     )
 
 
+#: Keys a tool error may not smuggle in through its details: they are the
+#: names ToolResult.failure sets itself.
+_RESERVED_DETAILS = frozenset({"error_code", "retryable"})
+
+
 class Dispatcher:
     """Routes model tool calls to handlers, under the loop contract."""
 
@@ -318,8 +323,14 @@ class Dispatcher:
         if "error" in outcome:
             exc = outcome["error"]
             if isinstance(exc, GantryError):
+                # Details are splatted as keyword arguments, so a detail named
+                # `error_code` or `retryable` would collide with the arguments
+                # set from the error itself and raise a TypeError from inside
+                # the handler for a failure - turning a reported tool error
+                # into a crashed run. The error's own code always wins.
+                details = {k: v for k, v in exc.details.items() if k not in _RESERVED_DETAILS}
                 return ToolResult.failure(
-                    exc.message, error_code=exc.code, retryable=exc.retryable, **exc.details
+                    exc.message, error_code=exc.code, retryable=exc.retryable, **details
                 )
             return ToolResult.failure(
                 f"{type(exc).__name__}: {exc}", error_code="tool.execution_failed"

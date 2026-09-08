@@ -24,6 +24,29 @@ agent is reliable or merely impressive in a demo.
 | 9 | Eval harness | Fixture tasks, deterministic scoring, regression gate |
 | 10 | Observability | OpenTelemetry GenAI spans, Prometheus metrics, cost accounting |
 
+## Try it
+
+No credentials needed. The offline provider is deterministic and costs nothing.
+
+```sh
+make install
+
+# What the harness would expose to a model, and what a grant refuses.
+.venv/bin/gantry tools --grant read-only
+
+# What is configured, and what is missing. Never prints a key.
+.venv/bin/gantry doctor
+
+# Run an agent against a workspace. Exits non-zero unless the gates pass.
+.venv/bin/gantry run "fix the failing test" -w path/to/workspace \
+    --gate 'tests=python -m pytest -q' --db .gantry/gantry.db
+
+# Read the recorded runs back.
+.venv/bin/gantry trace --db .gantry/gantry.db
+```
+
+`make demo` runs the last three against a throwaway fixture.
+
 ## Model access
 
 Built against **Azure OpenAI**. A deterministic offline provider ships alongside
