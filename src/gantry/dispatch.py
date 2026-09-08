@@ -23,7 +23,6 @@ Three behaviours are worth calling out because they are easy to get wrong:
 from __future__ import annotations
 
 import contextvars
-import json
 import random
 import threading
 import time
@@ -39,43 +38,11 @@ from gantry.errors import (
     ToolTimeout,
     ToolValidationError,
 )
+from gantry.messages import ToolCall
 from gantry.telemetry import metrics
 from gantry.telemetry import semconv as sc
 from gantry.telemetry.tracer import Tracer, get_tracer
 from gantry.tools import Grant, ToolContext, ToolRegistry, ToolResult, ToolSpec
-
-
-@dataclass(frozen=True)
-class ToolCall:
-    """A tool call as the provider emitted it.
-
-    ``arguments`` arrives as a JSON *string* from the Chat Completions API, and
-    a model can emit a malformed one. Parsing is therefore part of dispatch and
-    a parse failure is a normal, recoverable result.
-    """
-
-    id: str
-    name: str
-    arguments: str | dict[str, Any] = "{}"
-
-    def parse_arguments(self) -> dict[str, Any]:
-        if isinstance(self.arguments, dict):
-            return self.arguments
-        text = (self.arguments or "").strip() or "{}"
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ToolValidationError(
-                f"tool {self.name!r}: arguments were not valid JSON ({exc.msg} "
-                f"at position {exc.pos})",
-                tool=self.name,
-            ) from exc
-        if not isinstance(parsed, dict):
-            raise ToolValidationError(
-                f"tool {self.name!r}: arguments must be a JSON object, got {type(parsed).__name__}",
-                tool=self.name,
-            )
-        return parsed
 
 
 @dataclass
@@ -370,3 +337,7 @@ class Dispatcher:
 
 def stop_reason_from(outcome: DispatchOutcome) -> StopReason | None:
     return outcome.stop.stop_reason if outcome.should_stop else None
+
+
+#: Re-exported so callers can import the call and its dispatcher together.
+__all__ = ["DispatchOutcome", "DispatchResult", "Dispatcher", "ToolCall", "stop_reason_from"]
