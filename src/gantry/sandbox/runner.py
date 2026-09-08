@@ -174,6 +174,14 @@ class SandboxRunner:
         env["PWD"] = str(self.jail.root)
         # Deterministic hashing, so a re-run of a failing command reproduces.
         env["PYTHONHASHSEED"] = "0"
+        # No bytecode caching. This is not a tidiness preference, it is a
+        # correctness fix. CPython invalidates a .pyc on (mtime-in-seconds,
+        # size), and an agent that edits a file within the same second without
+        # changing its length defeats both - `return a - b` becoming
+        # `return a + b` is exactly that. The test gate then reports a failure
+        # for code that is already correct, and the agent spends its budget
+        # chasing a bug it has fixed.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         if not self.config.allow_network:
             env.update(NETWORK_OFF_ENV)
         env.update(extra or {})

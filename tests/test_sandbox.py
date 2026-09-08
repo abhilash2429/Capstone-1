@@ -501,3 +501,97 @@ def test_container_mode_without_docker_says_so(jail, workspace, monkeypatch):
     )
     with pytest.raises(SandboxError, match="docker was not found"):
         runner.run("ls")
+
+
+def test_bytecode_caching_is_off_so_a_correct_fix_is_not_reported_as_failing(runner, workspace):
+    """Regression, and a serious one. CPython invalidates a .pyc on
+    (mtime-in-seconds, size). An agent editing a file within the same second
+    without changing its length defeats both, so the test gate reports a
+    failure for code that is already correct and the agent spends its budget
+    chasing a bug it has fixed. `return a - b` -> `return a + b` is exactly
+    that shape: same length, same second.
+    """
+    import os
+
+    (workspace / "calc.py").write_text("def add(a, b):\n    return a - b\n")
+    (workspace / "test_calc.py").write_text(
+        "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+    assert runner.run([sys.executable, "-m", "pytest", "-q"]).exit_code != 0
+
+    stat = (workspace / "calc.py").stat()
+    (workspace / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    os.utime(workspace / "calc.py", (stat.st_atime, stat.st_mtime))
+    assert (workspace / "calc.py").stat().st_size == stat.st_size
+
+    result = runner.run([sys.executable, "-m", "pytest", "-q"])
+    assert result.exit_code == 0, result.combined_output()
+    assert not list(workspace.rglob("__pycache__"))
+
+
+def test_the_child_environment_sets_the_bytecode_flag(runner):
+    result = runner.run(
+        [sys.executable, "-c", "import os;print(os.environ.get('PYTHONDONTWRITEBYTECODE'))"]
+    )
+    assert result.stdout.strip() == "1"
+
+
+# --- the rlimit wrapper ----------------------------------------------------
+def test_the_limit_wrapper_parses_its_arguments_and_execs():
+    """Covered directly as well as through the runner: it normally executes in
+    a child process, where coverage cannot see it, and argument parsing that is
+    only exercised indirectly is argument parsing nobody has actually read."""
+    from gantry.sandbox import _limits
+
+    assert _limits.main([]) == 2  # nothing to run
+    assert _limits.main(["--cpu", "5", "--"]) == 2
+    assert _limits.main(["--", "definitely_not_a_binary_xyz"]) == 127
+
+
+def test_the_limit_wrapper_applies_limits_before_exec():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gantry.sandbox._limits",
+            "--cpu",
+            "11",
+            "--mem-mb",
+            "300",
+            "--nofile",
+            "128",
+            "--",
+            sys.executable,
+            "-c",
+            "import resource as R;print(R.getrlimit(R.RLIMIT_CPU)[0],"
+            "R.getrlimit(R.RLIMIT_AS)[0]//1048576, R.getrlimit(R.RLIMIT_NOFILE)[0])",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert result.stdout.split() == ["11", "300", "128"]
+
+
+def test_a_limit_the_platform_refuses_does_not_stop_the_command():
+    """The caller still has the wall-clock timeout and the process-group kill,
+    so an unsupported limit must not be fatal."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gantry.sandbox._limits",
+            "--nproc",
+            "999999999",
+            "--",
+            sys.executable,
+            "-c",
+            "print('ran anyway')",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert result.stdout.strip() == "ran anyway"
