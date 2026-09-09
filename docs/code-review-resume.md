@@ -38,7 +38,16 @@ existing tests do not catch.
 
 ## Findings confirmed so far
 
-Every finding below was reproduced by execution, not inferred from reading.
+52 findings, every one reproduced by execution rather than inferred from reading.
+The four that most deserve reading first, because each defeats a guarantee the
+code states in its own comments:
+
+| # | What it breaks |
+|---|---|
+| 13, 28, 41 | The cost ceiling cannot fire, for three independent reasons: cost is read off the wrong span, provider `usage` is unvalidated, and an unrecognised deployment name prices at $0.00. A $1.63 run was observed against a $0.01 limit, reported as $0.00. |
+| 12 | The agent loop raises `AttributeError` on its first elision under the default disabled tracer, losing the whole run. Every test uses the enabled fixture, so nothing catches it. |
+| 16 | A truncated, invalid or refusing completion claim is rewritten as `status="completed", succeeded=True`. `FINISH_SCHEMA` is declared and never enforced. |
+| 42 | `edit_file` truncates the target before encoding, so one unencodable replacement leaves the user's source at zero bytes. |
 
 ### 1. Resource limits are bypassable by the sandboxed command — `sandbox/_limits.py:36-37`
 
@@ -939,19 +948,243 @@ comments; it does not cover corrupting the value silently.
 Fix: split on an unquoted `#` before stripping, and strip at most one matched pair
 of surrounding quotes.
 
+## Session 2 findings — `toolkit/files.py`, `ledger.py`, `shell.py`, `messages.py`
+
+### 42. `edit_file` truncates the file before encoding, so an unencodable replacement destroys it — `toolkit/files.py:328`, with `163-171`
+
+`jail.open(..., "wb")` applies `O_TRUNC` before `content.encode("utf-8")` is
+evaluated, and the write is not atomic, so any exception mid-write leaves the
+user's source at zero bytes.
+
+Reproduced. `important.py` holding `def add(a, b):\n    return a - b\n`, read in
+full first, then edited with
+`new_string = json.loads(r'"return a \ud800+ b"')` — a lone surrogate, which
+`json.loads` produces from a provider emitting `\ud800`:
+
+```
+before: 32 bytes -> 'def add(a, b):\n    return a - b\n'
+read ok: True
+RAISED: UnicodeEncodeError 'utf-8' codec can't encode character '\ud800'
+        in position 28: surrogates not allowed
+after : 0 bytes -> ''
+ORIGINAL CONTENT LOST: True
+```
+
+`write_file` is immune to the identical input because it pre-encodes at line 243:
+`write_file raised: UnicodeEncodeError / file intact? True`. Same
+one-path-hardened-one-not shape as finding 23.
+
+Fix: encode once before opening, as `write_file` does, and write via a temp file
+plus `os.replace` so a failed write cannot truncate the original.
+
+### 43. `write_file` and `edit_file` read the whole target with no size check — `toolkit/files.py:256,297`
+
+`read_file` checks `max_read_bytes` against `stat()` before reading (lines
+186-193); the other two call `_read_bytes` unchecked, loading the file into memory
+before the ledger check that then refuses the operation anyway.
+
+On a 157,288,350-byte file:
+
+```
+read_file  -> REFUSED (cap checked before any read):
+              huge.log is 157,288,350 bytes, over the 400,000 byte read limit.
+peak RSS after read_file: 28 MB
+edit_file  -> ok=False 'Refusing to edit huge.log. You have not read huge.log...'
+peak RSS after edit_file: 325 MB   (1.4s)
+```
+
+A model-supplied path to a multi-GB file OOMs the harness in one call, for an
+operation that was going to be refused anyway.
+
+Fix: apply the same `stat().st_size > max_read_bytes` check inside `_read_bytes`.
+
+### 44. `edit_file` bypasses `max_write_bytes` entirely — `toolkit/files.py:328`
+
+```
+write_file 3MB REFUSED: Refusing to write 3,000,000 bytes, over the
+                        2,000,000 byte limit.
+edit_file  3MB -> True Edited b.txt at line 1. Line count changed by +0.
+                  resulting size: 3000001
+```
+
+`replace_all` with a large `new_string` writes an arbitrarily large file, which
+`read_file` can then never open again.
+
+Fix: check `len(updated.encode("utf-8"))` against `max_write_bytes` before writing.
+
+### 45. `complete=True` is recorded for a read the model never saw — `toolkit/files.py:210,225`
+
+`complete` is computed from the line slice only. It ignores `_clip` (lines 45-48,
+2,000 chars per line) and the dispatcher's
+`result.truncate(spec.max_output_chars)` at `dispatch.py:237`. The ledger then
+licenses the blind full-file overwrite that lines 252-255 call "the whole reason
+`write_file` reads before it writes".
+
+Handler output passed through `spec.max_output_chars` exactly as dispatch does:
+
+```
+1000 x 300-char lines: 300000 bytes
+    ledger/complete=True  handler chars=307033  model sees=60039  (20%)
+    blind write_file allowed? True -> Replaced f.txt (1 lines, 12 bytes).
+    file now 12 bytes
+
+single 399,000-char line: 399001 bytes
+    ledger/complete=True  handler chars=2081  model sees=2081  (1%)
+    blind write_file allowed? True -> Replaced f.txt (1 lines, 12 bytes).
+    file now 12 bytes
+```
+
+The one-enormous-line case is the sharpest: no line cap applies, `_clip` shows
+2,000 of 399,001 characters, and the ledger still says the file was fully observed.
+
+Fix: set `complete` only when the rendered body was neither clipped nor over
+`max_output_chars`.
+
+### 46. Two different definitions of "line" — `toolkit/files.py:204,213` vs `53,326`
+
+`read_file` numbers with `str.splitlines()`, which breaks on
+`\x0b \x0c \x1c \x1d \x1e \x85    `, while `_line_of` and
+`_occurrence_lines` count only `"\n"`. `total_lines`, the displayed numbers and
+the numbers in edit success and ambiguity messages all disagree.
+
+On a module using `\x0c` page separators, as CPython's own stdlib does:
+
+```
+mod.py (7 lines, 63 bytes)
+reported total_lines: 7  actual newline-delimited lines: 5
+edit ok: True | Edited mod.py at line 2. Line count changed by +0.
+first_line reported: 2  but read_file displayed it as line 3
+```
+
+The `\x0c` is rendered as an ordinary blank line, so it is invisible to the model,
+and the resulting no-match is then misdiagnosed as a whitespace problem.
+
+Fix: use one splitter (`content.split("\n")`) for numbering, display and offsets.
+
+### 47. A symlink fully inside the workspace can be read but never edited, and the refusal claims an escape — `toolkit/files.py:265,328`
+
+Both pass `raw_path` instead of the already-resolved path, so `_write_bytes`
+re-derives `jail.literal(raw_path)` and `O_NOFOLLOW` fires.
+
+`ws/link.py -> pkg/real.py`, both inside the workspace:
+
+```
+read via symlink ok: True | path reported: pkg/real.py
+edit RAISED: PathEscape - refusing to write through the symlink at 'link.py'
+target unchanged: VALUE = 1
+```
+
+Fix: pass `resolved`; containment is already established, and a resolved path is by
+definition not a symlink.
+
+### 48. `record()` unconditionally downgrades `complete` — `toolkit/ledger.py:51-61`
+
+Re-reading any page of a file already read in full revokes edit rights even though
+the digest is unchanged.
+
+```
+after full read, complete = True
+after paging to line 40, complete = False
+edit -> False | 'Refusing to edit f.txt. You have only read part of f.txt.
+                 Read it in full before editing...'
+```
+
+Fix: keep `complete=True` when the digest matches the prior complete observation.
+
+### 49. `.gantry` is hidden from search but writable — `toolkit/files.py:38` vs `toolkit/common.py:29`
+
+`IGNORED_DIRS` hides `.gantry` from glob and grep; `PROTECTED_PARTS` protects only
+`.git`. `.gantry` holds the telemetry DB (`config.py:133`) and the provider
+cassettes (`providers/cache.py:69`), so the agent can rewrite harness state and its
+own search tools will never show the damage.
+
+```
+glob '**/*'     : No file matches '**/*'.
+grep 'recorded' : No match for 'recorded' in 0 file(s).
+write_file .git/config -> CapabilityDenied: ... inside a protected directory
+--- two-step ---
+read_file:  True
+write_file: True Replaced .gantry/cassettes/abc123.json (1 lines, 37 bytes).
+cassette on disk now: {"response": {"content": "poisoned"}}
+```
+
+The read-then-write ledger rule is not a barrier here; it is one extra turn.
+Combined with finding 39, a poisoned cassette is a replayed provider reply that
+costs nothing and looks authentic.
+
+Fix: add `.gantry` to `PROTECTED_PARTS`.
+
+### 50. A negative `timeout_s` is passed straight through and misreported as a real timeout — `toolkit/shell.py:140`
+
+`number("Seconds to allow...")` carries no minimum, `min(float(requested),
+config.timeout_s)` keeps the negative, and `process.wait(timeout=-1)` raises
+`TimeoutExpired` immediately.
+
+```
+model-supplied negative timeout
+  ok: False  err: sandbox.timeout
+  data: {'command': 'echo hi', 'exit_code': -15, 'timed_out': True,
+         'duration_ms': 1.9, ...}
+  MODEL SEES: '$ echo hi\n[timed out after 0.0s and was killed]\n[exit code -15]'
+```
+
+`timeout_s: 0` is silently swallowed by the `if requested` truthiness test and
+falls back to the sandbox default, which is inconsistent with `-1`.
+
+Fix: reject non-positive values with `tool.invalid_arguments`, and test
+`requested is not None`.
+
+### 51. An existing non-UTF-8 file can never be replaced — `toolkit/files.py:256`
+
+`write_file` decodes the old contents before overwriting, so replacing a binary or
+latin-1 file is impossible and the error describes a read failure for a write
+operation:
+
+```
+write over data.bin: RAISED ToolExecutionError:
+  data.bin is a binary file and cannot be read as text.
+```
+
+Fix: skip the decode and compare digests over raw bytes.
+
+### 52. Deeply nested tool-call arguments kill the run, defeating the module's own stated contract — `messages.py:55-58`, with `dispatch.py:206-209`
+
+`parse_arguments` catches `json.JSONDecodeError` only, but `json.loads` raises
+`RecursionError` on deeply nested input. The docstring at lines 47-51 states the
+contract being broken: "A model can and does emit invalid JSON here. That is a
+normal turn outcome to be explained back to it, not an exception for the harness."
+
+```
+invalid JSON : ToolValidationError      <- recoverable, as intended
+deep nesting : RecursionError           <- escapes
+is GantryError? False
+```
+
+Input was `"[" * 60000 + "]" * 60000` as the `arguments` string.
+`dispatch.py:209` catches only
+`(ToolNotFound, CapabilityDenied, ToolValidationError)`, so this escapes
+`_dispatch_one` and kills the run on model-supplied input, three lines below a
+comment reading "Recoverable by the model".
+
+Fix: catch `(json.JSONDecodeError, RecursionError, ValueError)` in
+`parse_arguments` and raise `ToolValidationError`.
+
 ## What has NOT been reviewed yet
 
-- `toolkit/files.py`, `ledger.py`, `shell.py`, `common.py`, `__init__.py` — a
-  review of these was in flight when this doc was written. `toolkit/search.py` is
-  done (finding 37).
+Two units remain. Everything else in the partition table is done.
+
 - `telemetry/metrics.py`, `otlp.py`, `tracer.py`, `semconv.py` — spans left open on
-  exception paths, span-attribute cardinality, OTLP payload shape.
-  `store.py` and `pricing.py` are done (findings 38-39). "Telemetry failure crashing
-  a run" is answered and is finding 40, so start elsewhere on `tracer.py`.
-- `tools/registry.py`, `tools/spec.py`, `dispatch.py`, `cli/`, `messages.py`,
-  `errors.py` — argument validation before handler dispatch, config precedence,
-  exit codes. Partly covered: the `--grant read-only` question is answered under
-  "Checked and clean" below.
+  exception paths, span-attribute cardinality, OTLP payload shape, metric label
+  explosion from model-supplied names. `store.py` and `pricing.py` are done
+  (findings 38-39). "Telemetry failure crashing a run" is answered and is finding
+  40, so start elsewhere on `tracer.py`.
+- `tools/registry.py`, `tools/spec.py`, `dispatch.py`, `cli/`, `errors.py` —
+  version resolution and shadowing in the registry, `ToolResult.truncate`
+  boundaries, config precedence between flags, env and `.env`, exit codes, and
+  whether `errors.py` details ever carry a secret into a model-visible message.
+  Partly covered already: `--grant read-only` enforcement and the dispatch timeout
+  are answered under "Checked and clean"; `dispatch.py:206-209` is finding 52;
+  `config.py` is finding 41.
 
 ## Checked and clean
 
@@ -1053,6 +1286,47 @@ Stated so the next session knows these were looked at, not skipped.
   arguments. The other divergence is not harmless and is finding 28: offline always
   populates usage via `estimate_usage`, which is why azure's all-zero usage has no
   test coverage.
+- **Jail routing in `toolkit/files.py`.** Every filesystem touch goes through
+  `jail.open` / `jail.resolve`; no bare `open()`, `Path.read_text`, `os.*` or
+  `shutil.*` on a model-supplied path. All escapes refused: `../../etc/passwd`,
+  `/etc/passwd`, `~/.ssh/id_rsa`, `pkg/../../../etc/passwd`, a NUL-byte path, a
+  symlink pointing outside, and `.git/...` at any depth. Windows-style
+  `..\..\etc\passwd` is treated as a literal filename inside the workspace and
+  404s, which is correct.
+- **The jail `+`-mode bug (finding 2) is unreachable from `toolkit/`.** The only
+  modes passed at any `jail.open` call site are `"rb"` and `"wb"`.
+- **Encoding round-trips in `toolkit/files.py`.** UTF-8 BOM preserved byte-exact
+  through read→edit; CRLF preserved byte-exact and `_explain_miss` correctly
+  diagnoses an LF-vs-CRLF miss; latin-1, UTF-16 with and without BOM, and on-disk
+  lone surrogates are all refused with accurate messages.
+- **Edit find/replace semantics.** Zero matches → `tool.no_match` with a diagnosis;
+  more than one match without `replace_all` → `tool.ambiguous_match` listing the
+  occurrence lines and the total; `old == new` and an empty `old` both rejected.
+  Nothing is silently applied.
+- **File permissions on rewrite.** `0o755` preserved across `edit_file`; the
+  existing inode is truncated, not recreated.
+- **`ledger.py` persistence.** Purely in-memory `dict[str, Observation]`, never
+  serialised or parsed, so there is no malformed-entry or concurrent-append
+  corruption surface. Its one defect is finding 48.
+- **`shell.py` result fidelity.** A timeout is model-visible
+  (`[timed out after 3.0s and was killed]`, emitted before the output so it
+  survives truncation), truncation is model-visible, and exit codes are reported.
+  `killed_group` and `truncated` are absent from `payload`, but that dict is
+  harness-side and the span carries them via `as_attributes()`.
+- **`shell.py` does not pass stdin.** The word does not appear in the module, so
+  `runner.run` uses its `stdin=None` default and finding 3 is not reachable from
+  the `bash` tool.
+- **`common.py` schema helpers.** The registry rejects a float (`offset: 2.7`) and
+  a bool (`offset: True`) for `integer`. Negative and `10**20` values validate but
+  every handler clamps them safely with no crash. The one exception is
+  `bash.timeout_s`, which is finding 50.
+- **`common.py` `looks_binary`.** A UTF-16 file is caught by the NUL test and
+  refused; a text file with a single NUL is also refused, which is the documented
+  intent. A NUL past byte 8192 slips through, but NUL is valid UTF-8 and
+  round-trips byte-exact through read→edit, so nothing is corrupted.
+- **`toolkit/__init__.py`.** Wiring only; jail, ledger and limits are shared
+  correctly across `FileTools`, `SearchTools` and `ShellTools`, and `shell=False`
+  omits `bash` from the registry.
 - **`toolkit/search.py` glob against a dangling symlink.** `glob` sorts on
   `p.stat().st_mtime` with no `OSError` guard, unlike `grep` at line 102, but
   `jail.iter_files` does not yield broken symlinks, so the hypothesis does not
@@ -1069,9 +1343,12 @@ Stated so the next session knows these were looked at, not skipped.
    subagents instead.
 2. **Do not fan out six subagents at once.** An early session launched six in
    parallel (three on opus) and all six died instantly on a 429 session limit.
-   Session 2 ran at most three concurrently with no 429s, and reviewed two
-   subsystems on the main thread in parallel with them, which is cheaper because
-   the main thread does not re-derive context cold. Three is a workable ceiling.
+   Session 2 ran four subagents total, at most three concurrently, with no 429s,
+   and reviewed `rpc/client`, `rpc/transport`, `toolkit/search`, `telemetry/` and
+   `config.py` on the main thread in parallel with them. Three concurrent is a
+   workable ceiling. Give each subagent an explicit exclusion list naming the files
+   other reviewers own and the findings already filed, or two of them will
+   independently reproduce the same bug.
 
 ## Suggested partition, by risk rather than line count
 
@@ -1080,9 +1357,9 @@ Stated so the next session knows these were looked at, not skipped.
 | Heavy | `sandbox/` — runner, policy, jail, limits | 1,076 | done |
 | Heavy | `loop.py` + `verify.py` + `contract.py` + `budget.py` | 1,490 | done |
 | Heavy | `providers/` + `rpc/` | 1,663 | done |
-| Light | `toolkit/` | 1,118 | `search.py` done |
-| Light | `telemetry/` | 1,120 | `store.py`, `pricing.py` done |
-| Light | `tools/` + `dispatch.py` + `cli/` + `messages.py` + `config.py` + `errors.py` | 1,542 | `config.py` partly done |
+| Light | `toolkit/` | 1,118 | done |
+| Light | `telemetry/` | 1,120 | `store.py`, `pricing.py` done; `tracer.py` partly |
+| Light | `tools/` + `dispatch.py` + `cli/` + `messages.py` + `config.py` + `errors.py` | 1,542 | `messages.py`, `config.py` done |
 
 ---
 
