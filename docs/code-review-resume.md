@@ -631,7 +631,7 @@ message") and defends against on the writing side only.
 Fix: catch the decode error per line, report it, and continue; reserve termination
 for EOF and transport errors.
 
-### 30. A null `error` member reads as a successful null result — `rpc/protocol.py:186`, `rpc/client.py:80`
+### 26. A null `error` member reads as a successful null result — `rpc/protocol.py:186`, `rpc/client.py:80`
 
 `parse_response` checks that exactly one of `result` and `error` is *present as a
 key*, then `Response.is_error` tests the value. An explicit `"error": null`
@@ -650,7 +650,7 @@ time alongside the both/neither case.
 
 ## Session 2 findings — `providers/` and `rpc/server.py`
 
-### 31. The adapted-retry path never translates its exception, so a raw SDK error escapes `Provider.complete` — `providers/azure.py:152`
+### 27. The adapted-retry path never translates its exception, so a raw SDK error escapes `Provider.complete` — `providers/azure.py:152`
 
 Line 145 wraps its call in `try/except Exception: raise self._translate(exc)`;
 the adapted retry at 152 does not. Reproduced with a stub client that rejects
@@ -671,7 +671,7 @@ aborts instead of finishing with `StopReason.PROVIDER_ERROR`.
 Fix: wrap line 152 in the same `try/except Exception: raise self._translate(exc)
 from exc` as line 145.
 
-### 32. `usage` is copied from the response with no validation, so a missing block silently charges zero — `providers/azure.py:255-263`
+### 28. `usage` is copied from the response with no validation, so a missing block silently charges zero — `providers/azure.py:255-263`
 
 ```
 azure  usage: {'input_tokens': 0, 'output_tokens': 0, ...}
@@ -692,12 +692,12 @@ string cases raise untyped exceptions from inside telemetry, after the call was
 already billed.
 
 This is the third independent way the cost ceiling fails to hold, alongside
-findings 13 and 28.
+findings 13 and 39.
 
 Fix: coerce to non-negative ints and fall back to `estimate_usage` when the
 response reports no usage.
 
-### 33. `choice.message` is read as a hard attribute while everything around it uses `getattr` — `providers/azure.py:253`
+### 29. `choice.message` is read as a hard attribute while everything around it uses `getattr` — `providers/azure.py:253`
 
 Response `Obj(choices=[Obj(finish_reason="stop")])`:
 
@@ -711,7 +711,7 @@ Untyped, so no retry and not caught by `loop.py:266`.
 Fix: `Message.from_wire(getattr(choice, "message", None) or {})`, or raise
 `ProviderError`.
 
-### 34. A negative `Retry-After` header crashes the retry loop — `providers/base.py:49-50`, with `azure.py:199`
+### 30. A negative `Retry-After` header crashes the retry loop — `providers/base.py:49-50`, with `azure.py:199`
 
 The header value goes through `min()` unchanged into `self._sleep`.
 
@@ -726,7 +726,7 @@ turns a retryable rate-limit into an untyped crash.
 
 Fix: `return max(0.0, min(retry_after_s, self.max_delay_s))`.
 
-### 35. A handler result that is not JSON-serialisable kills `serve_forever` — `rpc/server.py:128,140,203-206`
+### 31. A handler result that is not JSON-serialisable kills `serve_forever` — `rpc/server.py:128,140,203-206`
 
 `_handle_one` catches handler exceptions, but serialisation happens after that
 guard. Handler `lambda params, ctx: {"seen": {"a","b"}}` (a set):
@@ -745,7 +745,7 @@ happen.
 Fix: encode inside the try, or encode per-response and substitute an
 `INTERNAL_ERROR` reply on `TypeError`.
 
-### 36. A notification with malformed `params` is answered, breaking the never-answer-a-notification rule the code states at line 159 — `rpc/server.py:148-151`, with `protocol.py:163-164`
+### 32. A notification with malformed `params` is answered, breaking the never-answer-a-notification rule the code states at line 159 — `rpc/server.py:148-151`, with `protocol.py:163-164`
 
 ```
 notification, good params            -> None
@@ -760,7 +760,7 @@ being raised at parse time.
 Fix: in `_handle_one`, return `None` when the failing payload is a dict with no
 `"id"` key.
 
-### 37. `$/cancelRequest` can never fire under `serve_forever`, the only I/O driver the module ships — `rpc/server.py:99-107,170-173,203-206`
+### 33. `$/cancelRequest` can never fire under `serve_forever`, the only I/O driver the module ships — `rpc/server.py:99-107,170-173,203-206`
 
 The loop is strictly sequential. Peer sends request id 9, then a cancel for id 9:
 
@@ -780,7 +780,7 @@ unreachable in production. `tests/test_rpc.py:186` passes only because it drives
 Fix: read lines on a reader thread, or dispatch handlers off the read loop, so
 control messages can be processed while a request is in flight.
 
-### 38. A corrupt or forward-incompatible cassette raises a raw exception and is counted as a hit — `providers/cache.py:88`
+### 34. A corrupt or forward-incompatible cassette raises a raw exception and is counted as a hit — `providers/cache.py:88`
 
 `get()` counts the hit before parsing, and `_from_payload` is tolerant everywhere
 (`.get` defaults, `FinishReason.parse` swallowing unknown values) except
@@ -801,7 +801,7 @@ two bogus "hits" in the stats.
 Fix: catch `(json.JSONDecodeError, TypeError, ValueError)` in `get()`, count a
 miss, and filter unknown keys in `_from_payload`.
 
-### 39. Cassettes are written world-readable — `providers/cache.py:96`
+### 35. Cassettes are written world-readable — `providers/cache.py:96`
 
 `mode=0o644 world-readable=True`, directory `0o755`, content
 `{"message": {"role": "assistant", "content": "the secret token is sk-live-ABCDEF"} …}`.
@@ -812,7 +812,7 @@ every recorded model reply.
 
 Fix: `os.chmod(temp, 0o600)` before `replace`, and create the directory 0700.
 
-### 40. A cache key containing `../` escapes the cassette directory — `providers/cache.py:78`
+### 36. A cache key containing `../` escapes the cassette directory — `providers/cache.py:78`
 
 The key is interpolated into a path with no validation.
 
@@ -828,7 +828,7 @@ Fix: reject keys that do not match `^[0-9a-f]{64}$`.
 
 ## Session 2 findings — `toolkit/`, `telemetry/`, `config.py`
 
-### 26. `grep` runs a model-supplied regex with no complexity bound, and the tool timeout cannot stop it — `toolkit/search.py:72,109`
+### 37. `grep` runs a model-supplied regex with no complexity bound, and the tool timeout cannot stop it — `toolkit/search.py:72,109`
 
 `re.compile(pattern)` accepts anything the model writes, and `dispatch.py:313-321`
 enforces `timeout_s` by joining a daemon thread and abandoning it. A catastrophic
@@ -857,7 +857,7 @@ file; nothing about the workspace is hostile.
 Fix: reject patterns with nested unbounded quantifiers, cap the line length fed to
 `search`, or run `grep` behind the process isolation the docstring relies on.
 
-### 27. `TelemetryStore(":memory:")` is not thread-safe, contradicting the class docstring — `telemetry/store.py:47,52-56`
+### 38. `TelemetryStore(":memory:")` is not thread-safe, contradicting the class docstring — `telemetry/store.py:47,52-56`
 
 Connections are thread-local, so with `:memory:` each thread gets its own separate,
 empty database. The schema is created once on the constructing thread only. Line 47
@@ -875,7 +875,7 @@ file that already carries the schema.
 Fix: use a single shared connection guarded by the existing `_write_lock` for
 `:memory:`, or use `file::memory:?cache=shared` with `uri=True`.
 
-### 28. An unrecognised deployment name prices at $0.00 and nothing consumes the `priced=False` flag — `telemetry/pricing.py:135-137`
+### 39. An unrecognised deployment name prices at $0.00 and nothing consumes the `priced=False` flag — `telemetry/pricing.py:135-137`
 
 ```
 'gpt-4o'                -> Cost(usd=12.5, priced=True,  verified=True)
@@ -893,7 +893,33 @@ This survives a fix to finding 13 and needs its own.
 Fix: have the contract treat `priced=False` as a hard stop or a loud warning
 rather than as $0.00.
 
-### 29. `load_dotenv` silently corrupts values — `config.py:59-60`
+### 40. An exporter failure kills a completed run and masks the real exception — `telemetry/tracer.py:291-292`
+
+`self.exporter.export(trace)` is called in the `finally` of `Tracer.trace` with no
+guard. `FanOutExporter` contains exporter failures and its comment states the
+principle — "Telemetry must never break the agent it is observing" — but that
+containment lives only inside the wrapper, and `cli/__main__.py:94-95` wires
+`StoreExporter(store)` in directly, unwrapped. `OtlpFileExporter.export`
+(`otlp.py:111-113`) is likewise unguarded.
+
+Reproduced with an exporter raising `OSError(28, "No space left on device")`, the
+shape of a full disk or an sqlite write that outlives the 30s busy timeout:
+
+```
+A. exporter raises on a clean run:
+   RUN DIED: OSError: [Errno 28] No space left on device
+B. exporter raises while the run is already failing:
+   caller sees: OSError: [Errno 28] No space left on device
+```
+
+Case B is the worse half: raising from a `finally` replaces the in-flight
+exception, so the real error the user needed to see is discarded and they are
+handed a telemetry error instead.
+
+Fix: wrap the `export` call at line 292 in `try/except Exception` and log, the way
+`FanOutExporter` already does.
+
+### 41. `load_dotenv` silently corrupts values — `config.py:59-60`
 
 `value.strip().strip('"').strip("'")` keeps an inline comment as part of the value
 and strips quote characters that are part of the secret.
@@ -917,10 +943,11 @@ of surrounding quotes.
 
 - `toolkit/files.py`, `ledger.py`, `shell.py`, `common.py`, `__init__.py` — a
   review of these was in flight when this doc was written. `toolkit/search.py` is
-  done (finding 26).
+  done (finding 37).
 - `telemetry/metrics.py`, `otlp.py`, `tracer.py`, `semconv.py` — spans left open on
-  exception paths, telemetry failure crashing a run, OTLP export errors.
-  `store.py` and `pricing.py` are done (findings 27-28).
+  exception paths, span-attribute cardinality, OTLP payload shape.
+  `store.py` and `pricing.py` are done (findings 38-39). "Telemetry failure crashing
+  a run" is answered and is finding 40, so start elsewhere on `tracer.py`.
 - `tools/registry.py`, `tools/spec.py`, `dispatch.py`, `cli/`, `messages.py`,
   `errors.py` — argument validation before handler dispatch, config precedence,
   exit codes. Partly covered: the `--grant read-only` question is answered under
@@ -990,7 +1017,7 @@ Stated so the next session knows these were looked at, not skipped.
 - **`telemetry/store.py` SQL and concurrency (file-backed).** Every caller-supplied
   value travels as a bound parameter; the one interpolated fragment is assembled
   from literals. Thread-local connections, a write lock, `BEGIN IMMEDIATE` with an
-  explicit `ROLLBACK`, WAL and a 30s busy timeout. Clean apart from finding 27.
+  explicit `ROLLBACK`, WAL and a 30s busy timeout. Clean apart from finding 38.
 - **Cache key completeness (`providers/cache.py`).** Mutating model, system prompt,
   user message, tool-result content, tool-result id, assistant tool-call arguments,
   tools, tool_choice, max_output_tokens, temperature, top_p, parallel_tool_calls and
@@ -1018,12 +1045,12 @@ Stated so the next session knows these were looked at, not skipped.
   duplicate ids each get their own reply, which the spec permits.
 - **RPC handler exceptions.** `_handle_one` converts any handler `Exception` into an
   error response and the `finally` always clears `_inflight`. Only the serialisation
-  step afterwards is unguarded (finding 35).
+  step afterwards is unguarded (finding 31).
 - **`offline.py` divergence from the real provider.** Same `Completion` shape, same
   `ProviderError` types, deterministic exhaustion turn. One divergence, verified as
   harmless: offline tool-call `arguments` is the fixture dict itself while
   production yields a JSON string, but `dispatch.py` fingerprints the *parsed*
-  arguments. The other divergence is not harmless and is finding 32: offline always
+  arguments. The other divergence is not harmless and is finding 28: offline always
   populates usage via `estimate_usage`, which is why azure's all-zero usage has no
   test coverage.
 - **`toolkit/search.py` glob against a dangling symlink.** `glob` sorts on
